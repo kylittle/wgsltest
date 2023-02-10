@@ -1,0 +1,3 @@
+*.wgsl
+*.out
+.state.json
