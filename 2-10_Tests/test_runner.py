@@ -161,6 +161,7 @@ if __name__ == "__main__":
         total_timer.start()
         test_case(iteration)
         print('\nTotal test time is: ', end='')
+        total_timer.stop()
 
     # Exited loop gracefully save state here
     fp = open('.state.json', 'w')
