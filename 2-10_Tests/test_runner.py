@@ -105,9 +105,13 @@ def test_case(iteration):
 
     out = subprocess.run(['wgslsmith-harness', 'run', '--timeout', '10', '-c', 'dawn:vk:7857', ub_file], capture_output=True, text=True)
     if 'timeout' in out.stdout:
-        print(colored('\tSlow Kernel', 'yellow'))
-        subprocess.run(['rm', clean_file]) # Clean up
-        subprocess.run(['rm', ub_file])
+        # Mismatch
+        subprocess.run(['mkdir', f'timeout{iteration}'])
+        # Move all relevant files to mismatch
+        subprocess.run(['mv', clean_file, ub_file, json_file, 'clean.out', f'timeout{iteration}'])
+        # Move mismatch to flagged
+        subprocess.run(['mv', f'timeout{iteration}', 'flagged'])
+        print(colored('\tTimeout', 'red')) 
         timer.stop()
         return
     with open('ub.out', 'w') as f:
