@@ -4,6 +4,8 @@ import json
 import subprocess
 import random
 from termcolor import colored 
+import csv
+import os
 
 class Timer:
     def __init__(self):
@@ -16,6 +18,7 @@ class Timer:
         elapsed_time = time.perf_counter() - self._start_time
         self._start_time = None
         print(f'\tElapsed time: {elapsed_time:0.4f} seconds')
+        return elapsed_time
 
 class SignalCatcher:
     kill_now = False
@@ -27,6 +30,7 @@ class SignalCatcher:
         self.kill_now = True
 
 def test_case(iteration):
+    timing_data = {'gen':None, 'check': None, 'flow': None, 'thread': None, 'base': None, 'ub': None, 'ub_run': None, 'compare': None, 'overall': None, 'complete': True}
     print(f'\n\nStarting iteration {iteration}:')
     
     # Use this timer to compute throughput benchmarking
@@ -41,7 +45,7 @@ def test_case(iteration):
     print('\nFuzzing a kernel...')
     timer.start()
     subprocess.run(['wgslsmith', 'gen', '--recondition', '-o', clean_file])
-    timer.stop()
+    timing_data['gen'] = timer.stop()
     
     # Run clean_file with the correct configuration (dawn:vk:7857 or wgpu:vk7857) and check validity
     print('\nChecking for timeout...')
@@ -51,23 +55,24 @@ def test_case(iteration):
     if 'timeout' in out.stdout:
         print(colored('\tSlow Kernel', 'yellow'))
         subprocess.run(['rm', clean_file]) # Clean up
-        timer.stop()
-        return
+        timing_data['check'] = timer.stop()
+        timing_data['complete'] = False
+        return timing_data
     print(colored('\tKernel OK continuing', 'green'))
-    timer.stop()
+    timing_data['check'] = timer.stop()
 
     # Insert flow
     print('\nInserting flow analysis...')
     timer.start()
     subprocess.run(['wgslsmith-flow', clean_file, clean_file])
-    timer.stop()
+    timing_data['flow'] = timer.stop()
 
     # Insert threading
     print('\nInserting threading...')
     timer.start()
     # TODO: Fix overhead and increase threads
     subprocess.run(['wgslsmith-thread', '-w', '16', clean_file, clean_file])
-    timer.stop()
+    timing_data['thread'] = timer.stop()
 
     # Run and pipe output to file clean.out (clean up extra lines here) NOTE: Assumption is that the last two steps don't change
     # execution time
@@ -78,13 +83,14 @@ def test_case(iteration):
     if 'timeout' in out.stdout:
         print(colored('\tSlow Kernel', 'yellow'))
         subprocess.run(['rm', clean_file]) # Clean up
-        timer.stop()
-        return
+        timing_data['base'] = timer.stop()
+        timing_data['complete'] = False
+        return timing_data
     with open('clean.out', 'w') as f:
         f.write(out.stdout)
 
     print(colored('\tKernel OK continuing', 'green'))
-    timer.stop()
+    timing_data['base'] = timer.stop()
 
     # Insert UB
     print('\nInserting undefined behavior...')
@@ -96,7 +102,7 @@ def test_case(iteration):
     json_data = f'{{\n"0:0": [{low_bound},0,0,0,{up_bound},0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0]\n}}'
     with open(json_file, 'w') as f:
         f.write(json_data)
-    timer.stop()
+    timing_data['ub'] = timer.stop()
 
 
     # Run and pipe output to file ub.out (clean up extra lines here) TODO: We might be interested in the data stored in 0:4
@@ -112,13 +118,14 @@ def test_case(iteration):
         # Move mismatch to flagged
         subprocess.run(['mv', f'timeout{iteration}', 'flagged'])
         print(colored('\tTimeout', 'red')) 
-        timer.stop()
-        return
+        timing_data['ub_run'] = timer.stop()
+        timing_data['complete'] = False
+        return timing_data
     with open('ub.out', 'w') as f:
         f.write(out.stdout)
 
     print(colored('\tKernel OK continuing', 'green'))
-    timer.stop()
+    timing_data['ub_run'] = timer.stop()
 
     # For now use Grep, lets get timing on this tomorrow (TODO)
     print('\nComparing outputs...')
@@ -141,12 +148,20 @@ def test_case(iteration):
         print(colored('\tOk, cleaning up', 'green'))
         subprocess.run(['rm', clean_file, ub_file, json_file, 'clean.out', 'ub.out'])
 
-    timer.stop()
+    timing_data['compare'] = timer.stop()
+    return timing_data
+
 
 # TODO: Keep track of execution stats (would be nice to know how many timeouts we get so we can optimize the timeout bounds)
 if __name__ == "__main__":
     catcher = SignalCatcher()
     total_timer = Timer()
+    
+    if not os.path.isfile('data.csv'):
+        with open('data.csv', 'w', newline='') as csvfile:
+            fieldnames = ['gen', 'check', 'flow', 'thread', 'base', 'ub', 'ub_run', 'compare', 'overall', 'complete']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
 
     # Grab itertion from json if it exists else set iter to 0
     try:
@@ -159,9 +174,15 @@ if __name__ == "__main__":
     while not catcher.kill_now:
         iteration += 1 # Increment before to protect on exit
         total_timer.start()
-        test_case(iteration)
+        timing_data = test_case(iteration)
         print('\nTotal test time is: ', end='')
-        total_timer.stop()
+        timing_data['overall'] = total_timer.stop()
+
+        # Now lets write our timing data to the next row in a csv
+        field_names = list(timing_data.keys())
+        with open('data.csv', 'a', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writerow(timing_data) 
 
     # Exited loop gracefully save state here
     fp = open('.state.json', 'w')
